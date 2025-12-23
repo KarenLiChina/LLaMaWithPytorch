@@ -27,6 +27,29 @@ class ModelArgs:
     device: str = None  # 给 pytorch用的，是用GPU还是用CPU
 
 
+def precompute_theta_pos_frequencies(head_dim: int, seq_len: int, device: str, theta: float = 10000.0):
+    # 预先计算RoPE中需要的mθ，将需要提前定义的位置编码计算出来
+    assert head_dim % 2 == 0, "必须可以被2整除，因为公式中 d/2"
+
+    # 构建theta参数
+    # 根据论文中的公式实现
+    theta_numerator = torch.arrange(0, head_dim, 2).float()  # 序列左闭，右开，步长为2,得到的就是公式中的 2(i-1)
+    theta = 1.0 / (theta ** (theta_numerator / head_dim))  # 10000^(-2(i-1)/d)
+
+    # 构建 m 参数，代表着 positions位置
+    m = torch.arange(seq_len, device=device)
+
+    # 接下来 要计算m θ两个序列内积，这里我们要的到所有的排列组合，用torch.outer
+    # 这样每个position都有一组mθ值
+    freqs = torch.outer(m, theta).float()
+
+    # 可以用极坐标形式计算复数 torch.polar(abs, angle,*,out=None): out = abs·cos(angle)+abs·sin(angle)·j
+    # torch.ones_like(freqs) 是和 freqs形状一样的矩阵，只是每个位置都是1， 那前面公式中的abs就是1
+    # 那些面得到的就是cos(mθ)+i sin(mθ)的矩阵
+    freqs_complex = torch.polar(torch.ones_like(freqs), freqs)
+    return freqs_complex
+
+
 class Transformer(nn.Module):
     def __init__(self, args: ModelArgs) -> None:
         super().__init__()
@@ -55,20 +78,21 @@ class Transformer(nn.Module):
         # 这里实现的是inference，所以每次传入的是一个token,那么seq_len一直都是1
         # tokens 的形式是(B, seq_len) Batch size * 每条样本的长度
         batch_size, seq_len = tokens.shape
-        assert seq_len != 1, "每次只处理一个token"
+        assert seq_len == 1, "每次只处理一个token"
 
         # (B, seq_len)-> (B, seq_len, Dim)是input embedding做的事情
         h = self.tok_embedding(tokens)  # 本事是调用的nn.Embedding
 
         # 先去计算 positional encoding相关的信息
         # 根据位置 [start_pos, start_pos+seq_len] 获取(m, theta)， m代表position，theta代表角度
-        freqs_complex = self.freqs_complex[start_pos:start_pos + seq_len] # freqs_complex 已经在前面通过precompute_theta_pos_frequencies 计算出来了
+        freqs_complex = self.freqs_complex[
+            start_pos:start_pos + seq_len]  # freqs_complex 已经在前面通过precompute_theta_pos_frequencies 计算出来了
 
         # 连续应用 encoder layers / transformer block
 
         for layer in self.layers:
-            h = layer(h, start_pos, freqs_complex) # h会一直往下传，再被赋值回来
+            h = layer(h, start_pos, freqs_complex)  # h会一直往下传，再被赋值回来
 
-        h=self.norm(h) #整体归一化
+        h = self.norm(h)  # 整体归一化
         output = self.output(h).float()
         return output
