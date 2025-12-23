@@ -81,6 +81,19 @@ class RMSNorm(nn.Module):
         return self._norm(x.float()).type_as(x) * self.weight
 
 
+def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
+    batch_size, seq_len, n_kv_heads, head_dim = x.shape
+    if n_rep == 1:
+        # MHA
+        return x
+    else:
+        # GQA
+        return (
+            x[:, :, :, None, :].expand(batch_size, seq_len, n_kv_heads, n_rep, head_dim)
+            .reshape(batch_size, seq_len, n_kv_heads * n_rep, head_dim)
+        )
+
+
 class SelfAttention(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
@@ -126,6 +139,10 @@ class SelfAttention(nn.Module):
 
         keys = self.cache_k[:batch_size, 0:start_pos + seq_len]
         values = self.cache_v[:batch_size, 0:start_pos + seq_len]
+
+        # 重复 keys 和 values，以达到与 query的数量匹配，再进行矩阵相乘时，不会出错
+        keys = repeat_kv(keys, self.n_req)
+        values = repeat_kv(values, self.n_req)
 
         # (B, 1, H_Q, Head_Dim)-> (B, H_Q, 1, Head_Dim) 维度转换一下
         xq = xq.transpose(1, 2)
