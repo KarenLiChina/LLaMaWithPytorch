@@ -1,8 +1,10 @@
+import math
 from dataclasses import dataclass
 from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 # 加了注释之后，会自动为类生成一些特殊方法，减少样板代码
@@ -79,13 +81,77 @@ class RMSNorm(nn.Module):
         return self._norm(x.float()).type_as(x) * self.weight
 
 
+class SelfAttention(nn.Module):
+    def __init__(self, args: ModelArgs):
+        super().__init__()
+        self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
+        self.n_heads_q = args.n_heads  # 当 n_kv_heads 和n_heads_q 都是n_heads，那同一组里就都有QKV，就是MHA，如果不同就是GQA
+        # 算出一个query of head 对应多少个重复的 repeated keys and values of heads
+        self.n_req = self.n_heads_q // self.n_kv_heads  # 相等时，就是MHA，不等时，是GQA，算出每组中对应几个Q
+        self.head_dim = args.dim // args.n_heads  # 4096/32
+        self.device = args.device
+
+        self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)  # 第二参数就是 args.dim,是个方形矩阵，这样写在之后reshape的时候比较好理解
+        self.wk = nn.Linear(args.dim, args.n_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(args.dim, args.n_kv_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
+        self.cache_k = torch.zeros(args.max_batch_size, args.max_seq_len, self.n_kv_heads, self.head_dim)
+        self.cache_v = torch.zeros(args.max_batch_size, args.max_seq_len, self.n_kv_heads, self.head_dim)
+
+    def forward(self, x: torch.Tensor, start_pos: int, freqs_complex: torch.Tensor):
+        # 把x的形状接收一下 (B, 1, Dim)
+        batch_size, seq_len, _ = x.shape
+
+        # x的形状(B, 1, Dim)->xq的形状(B, 1, H_Q* Head_Dim)
+        xq = self.wq(x)
+        # x的形状(B, 1, Dim)->xk的形状(B, 1, H_KV* Head_Dim)
+        xk = self.wk(x)
+        xv = self.wv(x)
+
+        # reshape: xq (B, 1, H_Q* Head_Dim)->(B,1 H_Q, Head_Dim)
+        xq = xq.view(batch_size, seq_len, self.n_heads_q, self.head_dim)
+        # reshape: xk/xv (B, 1, H_KV* Head_Dim)->(B,1 H_KV, Head_Dim)
+        xk = xk.view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+        xv = xv.view(batch_size, seq_len, self.n_kv_heads, self.head_dim)
+
+        # 应用RoPE
+        xq = apply_rotary_embedding(xq, freqs_complex, device=self.device)
+        xk = apply_rotary_embedding(xk, freqs_complex, device=self.device)
+
+        # 前面把cache初始化为0， 所以这里 append 其实就是将对应位置赋值就可以了
+        self.cache_k[:batch_size, start_pos:start_pos + seq_len] = xk
+        self.cache_v[:batch_size, start_pos:start_pos + seq_len] = xv
+
+        # 为了后面去计算 self attention，需要取出前面的数据
+
+        keys = self.cache_k[:batch_size, 0:start_pos + seq_len]
+        values = self.cache_v[:batch_size, 0:start_pos + seq_len]
+
+        # (B, 1, H_Q, Head_Dim)-> (B, H_Q, 1, Head_Dim) 维度转换一下
+        xq = xq.transpose(1, 2)
+        keys = keys.transpose(1, 2)
+        values = values.transpose(1, 2)
+
+        # 把 K转换成keys.transpose(2, 3)
+        # 然后用 Q 和K的转置进行矩阵相乘 (B, H_Q, 1, Head_Dim) @ (B,H_Q,Head_Dim,Seq_Len_KV) --> (B, H_Q, 1, Seq_Len_KV)
+        scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
+        scores = F.softmax(scores, dim=-1).type_as(xq)  # 变成概率分布
+
+        # (B, H_Q, 1, Seq_Len_KV) @ ((B,H_Q,Seq_Len_KV,Head_Dim)-->(B, H_Q, 1, Head_Dim)
+        output = torch.matmul(scores, values)
+
+        # (B, H_Q, 1, Head_Dim)->(B, 1, H_Q, Head_Dim) -->(B, 1, Dim)下面的代码先调换1，2位置，然后把最后两列称道一起
+        output = output.transpose(1, 2).view(batch_size, seq_len, -1)
+        return self.wo(output)
+
+
 class EncoderBlock(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.n_heads = args.n_heads  # default value 32
         self.dim = args.dim  # 编码维度 default value 4096
         self.head_dim = args.dim // args.n_heads  # 4096/32
-        self.attention = SelfAttention(args)  # MHA或者是GHA
+        self.attention = SelfAttention(args)  # MHA或者是GQA
         self.feed_forward = FeedForward(args)
         # attention之前需要归一化
         self.attention_norm = RMSNorm(self.dim, eps=args.norm_eps)
