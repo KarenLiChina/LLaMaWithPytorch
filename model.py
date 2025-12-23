@@ -3,7 +3,6 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-from torch.nn import RMSNorm
 
 
 # 加了注释之后，会自动为类生成一些特殊方法，减少样板代码
@@ -61,6 +60,24 @@ def apply_rotary_embedding(x: torch.Tensor, freqs_complex: torch.Tensor, device:
     x_out = torch.view_as_real(x_rotated)
     x_out = x_out.reshape(*x.shape)  # 加* 去掉小括号
     return x_out.type_as(x).to(device)
+
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        # 公式中的 g 参数
+        self.weight = nn.Parameter(torch.ones(dim))  # 初始化参数值为1
+
+    def _norm(self, x: torch.Tensor):  # x需要归一化的数据
+        # x的形状(B, Seq_Len, Dim) batch size, 每条样本的长度，每条样本每个token对应维度的大小
+        # torch.rsqrt() 简单来说就是对每个元素开根号，再去取倒数
+        # mean 参数中的-1，是值对最后一个维度求平均，就是对Dim这个维度来求平均,加 + self.eps，防止分母为0
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+
+    def forward(self, x: torch.Tensor):
+        return self._norm(x.float()).type_as(x) * self.weight
+
 
 
 class Transformer(nn.Module):
