@@ -141,7 +141,7 @@ class SelfAttention(nn.Module):
         output = torch.matmul(scores, values)
 
         # (B, H_Q, 1, Head_Dim)->(B, 1, H_Q, Head_Dim) -->(B, 1, Dim)下面的代码先调换1，2位置，然后把最后两列称道一起
-        output = output.transpose(1, 2).view(batch_size, seq_len, -1)
+        output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
         return self.wo(output)
 
 
