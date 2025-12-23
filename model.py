@@ -1,10 +1,8 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import math
 from dataclasses import dataclass
 from typing import Optional
 
+import torch
+import torch.nn as nn
 from torch.nn import RMSNorm
 
 
@@ -48,6 +46,21 @@ def precompute_theta_pos_frequencies(head_dim: int, seq_len: int, device: str, t
     # 那些面得到的就是cos(mθ)+i sin(mθ)的矩阵
     freqs_complex = torch.polar(torch.ones_like(freqs), freqs)
     return freqs_complex
+
+
+def apply_rotary_embedding(x: torch.Tensor, freqs_complex: torch.Tensor, device: str):
+    # 1. 将 x token 向量中的dimension个值进行分组，2个值一组
+    # x.float().reshape(*x.shape[:-1], -1, 2) x.shape[:-1] 是除了最后一列，前面的所有列，左闭右开，前面加了*号后，去掉了外面的一层小括号，加入原本的形状为(1,2,3,6)->就变成了(1,2,3,3,2)
+    # 2. 将其转换为 复数形式
+    x_complex = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
+    # freqs_complex 是个二维矩阵，现在需要升高维度，进行转换(Seq_Len, Head_Dim/2)->(1, Seq_Len, 1, Head_Dim/2)
+    freqs_complex = freqs_complex.unsqueeze(0).unsqueeze(2)  # 在维度为0和2的位置增加维度
+    # 3. 乘上我们准备好的矩阵
+    x_rotated = x_complex * freqs_complex
+    # 4. 将复数a+ib形式中的 a和b提取出来
+    x_out = torch.view_as_real(x_rotated)
+    x_out = x_out.reshape(*x.shape)  # 加* 去掉小括号
+    return x_out.type_as(x).to(device)
 
 
 class Transformer(nn.Module):
