@@ -79,6 +79,24 @@ class RMSNorm(nn.Module):
         return self._norm(x.float()).type_as(x) * self.weight
 
 
+class EncoderBlock(nn.Module):
+    def __init__(self, args: ModelArgs):
+        super().__init__()
+        self.n_heads = args.n_heads  # default value 32
+        self.dim = args.dim  # 编码维度 default value 4096
+        self.head_dim = args.dim // args.n_heads  # 4096/32
+        self.attention = SelfAttention(args)  # MHA或者是GHA
+        self.feed_forward = FeedForward(args)
+        # attention之前需要归一化
+        self.attention_norm = RMSNorm(self.dim, eps=args.norm_eps)
+        # feedforward之前需要归一化
+        self.ffn_norm = RMSNorm(self.dim, eps=args.norm_eps)
+
+    def forward(self, x: torch.Tensor, start_pos: int, freqs_complex: torch.Tensor):
+        h = x + self.attention.forward(self.attention_norm(x), start_pos, freqs_complex)  # self attention 的正向传播, h是中间结果
+        out = h + self.feed_forward.forward(self.ffn_norm(h))
+        return out
+
 
 class Transformer(nn.Module):
     def __init__(self, args: ModelArgs) -> None:
