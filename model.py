@@ -162,6 +162,34 @@ class SelfAttention(nn.Module):
         return self.wo(output)
 
 
+class FeedForward(nn.Module):
+    def __init__(self, args: ModelArgs):
+        super().__init__()
+
+        hidden_dim = 4 * args.dim  # 隐藏层的维数
+        hidden_dim = int(2 * hidden_dim / 3)  # 整数，论文中提到的2/3
+        if args.ffn_dim_multiplier is not None:
+            hidden_dim = int(args.ffn_dim_multiplier * hidden_dim)  # 关于维度的一个因子
+        # eg. hidden_size = 7; multiple=5; 现在hidden_size是7，想要一个比7到的第一个5的倍数
+        # (7+5-1)//5=2 -->5 * 2 = 10
+        # 得到隐藏层的数量
+        hidden_dim = args.multiple_of * ((hidden_dim + args.multiple_of - 1) // args.multiple_of)
+
+        self.w1 = nn.Linear(args.dim, hidden_dim, bias=False)  # 进入的维度，进行升维到隐藏层的维度
+        self.w2 = nn.Linear(hidden_dim, args.dim, bias=False)
+        self.w3 = nn.Linear(args.dim, hidden_dim, bias=False)
+
+        def forward(self, x: torch.Tensor):
+            # SwiGLU 是Swish 激活函数和GLU 函数的结合
+            # SwiGLU(A, B)= A * Swish(B)
+            swish = F.silu(self.w1(x)) # silu非线性变换， 这行代表公式里的B
+            x_v = self.w3(x) # 代表公式里的A
+            x = swish * x_v
+            x= self.w2(x) # 再经过w2矩阵降维
+            return x
+
+
+
 class EncoderBlock(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
