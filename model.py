@@ -1,10 +1,14 @@
+import json
 import math
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sentencepiece import SentencePieceProcessor
 
 
 # 加了注释之后，会自动为类生成一些特殊方法，减少样板代码
@@ -182,12 +186,11 @@ class FeedForward(nn.Module):
         def forward(self, x: torch.Tensor):
             # SwiGLU 是Swish 激活函数和GLU 函数的结合
             # SwiGLU(A, B)= A * Swish(B)
-            swish = F.silu(self.w1(x)) # silu非线性变换， 这行代表公式里的B
-            x_v = self.w3(x) # 代表公式里的A
+            swish = F.silu(self.w1(x))  # silu非线性变换， 这行代表公式里的B
+            x_v = self.w3(x)  # 代表公式里的A
             x = swish * x_v
-            x= self.w2(x) # 再经过w2矩阵降维
+            x = self.w2(x)  # 再经过w2矩阵降维
             return x
-
 
 
 class EncoderBlock(nn.Module):
@@ -255,3 +258,55 @@ class Transformer(nn.Module):
         h = self.norm(h)  # 整体归一化
         output = self.output(h).float()
         return output
+
+
+# 加载 LLaMa的模型
+class LLaMa:
+    def __init__(self, model: Transformer, tokenizer: SentencePieceProcessor, model_args: ModelArgs):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.args = model_args
+
+    # 加了static之后不需要每次都new模型
+    @staticmethod
+    def build(checkpoint_dir: str, tokenizer_path: str, load_model: bool, max_seq_len: int, max_batch_size: int, device: str):
+        # checkpoint_dir 存放下载模型的路径
+        prev_time = time.time()  # 记录时间
+        if load_model:
+            checkpoints = sorted(Path(checkpoint_dir).glob('*.pth'))
+            assert len(checkpoints) > 0, f" checkpoint文件没有在{checkpoint_dir}中找打"
+            chk_path = checkpoints[0]
+            print(f"加载模型文件...{chk_path}")
+            checkpoint = torch.load(chk_path, map_location='cpu')
+            print(f"checkpoint 文件加载完毕，耗时{(time.time() - prev_time):.2f}s")
+            prev_time = time.time()
+        if device == "cuda":
+            torch.set_default_tensor_type(torch.cuda.HalfTensor)  # 半精度模型
+        else:
+            torch.set_default_tensor_type(torch.BFloat16Tensor)  # cpu的时候设置为BFloat16Tensor
+
+        with open(Path(checkpoint_dir) / 'params.json', 'r') as f:
+            params = json.load(f.read())
+
+        # 获取模型参数
+        model_args: ModelArgs = ModelArgs(
+            max_seq_len=max_seq_len,
+            max_batch_size=max_batch_size,
+            device=device,
+            **params
+        )
+
+        tokenizer = SentencePieceProcessor()
+        tokenizer.load(tokenizer_path)
+        model_args.vocab_size = tokenizer.vocab_size()
+
+        model = Transformer(model_args).to(device)
+
+        if load_model:
+            # 从checkpoint中删除 rope。freqs，因为我们前面已经通过 precompute_theta_pos_frequencies 函数自己计算了，用自己写的替换一下
+            del checkpoint["rpoe.freqs"]
+            # strict=True, 模型是字典，键值对形式，所以参数名字要对上，如果对不上就抛异常
+            model.load_state_dict(checkpoint, strict=True)
+            print(f"加载 state dict 耗时{(time.time()-prev_time):.2f}s")
+
+        return LLaMa(model, tokenizer, model_args)
