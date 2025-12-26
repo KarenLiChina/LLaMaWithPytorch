@@ -220,7 +220,7 @@ class Transformer(nn.Module):
         self.args = args
         self.vocab_size = args.vocab_size
         self.n_layers = args.n_layers
-        self.tok_embedding = nn.Embedding(self.vocab_size, self.args.dim)  # 词表有多少个词，和转换成多少维的向量
+        self.tok_embeddings = nn.Embedding(self.vocab_size, self.args.dim)  # 词表有多少个词，和转换成多少维的向量
 
         self.layers = nn.ModuleList()  # 装载神经网络的多层
 
@@ -243,7 +243,7 @@ class Transformer(nn.Module):
         assert seq_len == 1, "每次只处理一个token"
 
         # (B, seq_len)-> (B, seq_len, Dim)是input embedding做的事情
-        h = self.tok_embedding(tokens)  # 本事是调用的nn.Embedding
+        h = self.tok_embeddings(tokens)  # 本事是调用的nn.Embedding
 
         # 先去计算 positional encoding相关的信息
         # 根据位置 [start_pos, start_pos+seq_len] 获取(m, theta)， m代表position，theta代表角度
@@ -307,6 +307,21 @@ class LLaMa:
             del checkpoint["rpoe.freqs"]
             # strict=True, 模型是字典，键值对形式，所以参数名字要对上，如果对不上就抛异常
             model.load_state_dict(checkpoint, strict=True)
-            print(f"加载 state dict 耗时{(time.time()-prev_time):.2f}s")
+            print(f"加载 state dict 耗时{(time.time() - prev_time):.2f}s")
 
         return LLaMa(model, tokenizer, model_args)
+
+
+if __name__ == '__main__':
+    allow_cuda = True
+    device = "cuda" if torch.cuda.is_available() and allow_cuda else "cpu"
+    model = LLaMa.build(
+        checkpoint_dir="d:/LLaMa/llama-2-7b/",
+        tokenizer_path="d:/LLaMa/llama-2-7b/tokenizer.model",
+        load_model=True,
+        max_seq_len=1024,
+        max_batch_size=1024,
+        device=device,
+    )
+
+    print("Model is running")
