@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sentencepiece import SentencePieceProcessor
+from safetensors.torch import load_file
 
 
 # 加了注释之后，会自动为类生成一些特殊方法，减少样板代码
@@ -24,8 +25,8 @@ class ModelArgs:
     norm_eps: float = 1e-5
 
     # 参数给KV cache 使用
-    max_batch_size: int = 32  # 最大批次数量
-    max_seq_len: int = 2048  # 最大句子长度
+    max_batch_size: int = 4  # 最大批次数量
+    max_seq_len: int = 256  # 最大句子长度
 
     device: str = None  # 给 pytorch用的，是用GPU还是用CPU
 
@@ -101,8 +102,8 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
 class SelfAttention(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
         self.n_heads_q = args.n_heads  # 当 n_kv_heads 和n_heads_q 都是n_heads，那同一组里就都有QKV，就是MHA，如果不同就是GQA
+        self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
         # 算出一个query of head 对应多少个重复的 repeated keys and values of heads
         self.n_req = self.n_heads_q // self.n_kv_heads  # 相等时，就是MHA，不等时，是GQA，算出每组中对应几个Q
         self.head_dim = args.dim // args.n_heads  # 4096/32
@@ -273,11 +274,20 @@ class LLaMa:
         # checkpoint_dir 存放下载模型的路径
         prev_time = time.time()  # 记录时间
         if load_model:
-            checkpoints = sorted(Path(checkpoint_dir).glob('*.pth'))
-            assert len(checkpoints) > 0, f" checkpoint文件没有在{checkpoint_dir}中找打"
-            chk_path = checkpoints[0]
-            print(f"加载模型文件...{chk_path}")
-            checkpoint = torch.load(chk_path, map_location='cpu')
+            # 获取所有safetensors文件并按分片编号排序
+            checkpoint_files = sorted(
+                Path(checkpoint_dir).glob('model-*.safetensors'),
+                key=lambda x: int(x.stem.split('-')[1])  # 按分片编号排序
+            )
+            assert len(checkpoint_files) > 0, f" checkpoint文件没有在{checkpoint_dir}中找到"
+            print(f"找到 {len(checkpoint_files)} 个模型分片文件")
+
+            # 合并所有分片文件
+            checkpoint = {}
+            for i, chk_path in enumerate(checkpoint_files):
+                print(f"加载模型文件 {i + 1}/{len(checkpoint_files)}: {chk_path.name}")
+                shard_checkpoint = load_file(chk_path, device='cpu')
+                checkpoint.update(shard_checkpoint)
             print(f"checkpoint 文件加载完毕，耗时{(time.time() - prev_time):.2f}s")
             prev_time = time.time()
         if device == "cuda":
@@ -285,8 +295,8 @@ class LLaMa:
         else:
             torch.set_default_tensor_type(torch.BFloat16Tensor)  # cpu的时候设置为BFloat16Tensor
 
-        with open(Path(checkpoint_dir) / 'params.json', 'r') as f:
-            params = json.load(f.read())
+        with open('params.json', 'r') as f:
+            params = json.load(f)
 
         # 获取模型参数
         model_args: ModelArgs = ModelArgs(
@@ -316,8 +326,8 @@ if __name__ == '__main__':
     allow_cuda = True
     device = "cuda" if torch.cuda.is_available() and allow_cuda else "cpu"
     model = LLaMa.build(
-        checkpoint_dir="d:/LLaMa/llama-2-7b/",
-        tokenizer_path="d:/LLaMa/llama-2-7b/tokenizer.model",
+        checkpoint_dir="c:/model/llama-2-7b/",
+        tokenizer_path="c:/model/llama-2-7b/tokenizer.model",
         load_model=True,
         max_seq_len=1024,
         max_batch_size=1024,
