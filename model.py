@@ -25,8 +25,8 @@ class ModelArgs:
     norm_eps: float = 1e-5
 
     # 参数给KV cache 使用
-    max_batch_size: int = 4  # 最大批次数量
-    max_seq_len: int = 256  # 最大句子长度
+    max_batch_size: int = 1  # 最大批次数量
+    max_seq_len: int = 32  # 最大句子长度
 
     device: str = None  # 给 pytorch用的，是用GPU还是用CPU
 
@@ -37,7 +37,7 @@ def precompute_theta_pos_frequencies(head_dim: int, seq_len: int, device: str, t
 
     # 构建theta参数
     # 根据论文中的公式实现
-    theta_numerator = torch.arrange(0, head_dim, 2).float()  # 序列左闭，右开，步长为2,得到的就是公式中的 2(i-1)
+    theta_numerator = torch.arange(0, head_dim, 2).float()  # 序列左闭，右开，步长为2,得到的就是公式中的 2(i-1)
     theta = 1.0 / (theta ** (theta_numerator / head_dim))  # 10000^(-2(i-1)/d)
 
     # 构建 m 参数，代表着 positions位置
@@ -110,8 +110,8 @@ class SelfAttention(nn.Module):
         self.device = args.device
 
         self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)  # 第二参数就是 args.dim,是个方形矩阵，这样写在之后reshape的时候比较好理解
-        self.wk = nn.Linear(args.dim, args.n_kv_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(args.dim, args.n_kv_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
         self.cache_k = torch.zeros(args.max_batch_size, args.max_seq_len, self.n_kv_heads, self.head_dim)
         self.cache_v = torch.zeros(args.max_batch_size, args.max_seq_len, self.n_kv_heads, self.head_dim)
@@ -323,15 +323,15 @@ class LLaMa:
 
 
 if __name__ == '__main__':
-    allow_cuda = True
+    allow_cuda = False
     device = "cuda" if torch.cuda.is_available() and allow_cuda else "cpu"
     model = LLaMa.build(
         checkpoint_dir="c:/model/llama-2-7b/",
         tokenizer_path="c:/model/llama-2-7b/tokenizer.model",
         load_model=True,
-        max_seq_len=1024,
-        max_batch_size=1024,
-        device=device,
+        max_seq_len=32,
+        max_batch_size=1,
+        device=device
     )
 
     print("Model is running")
