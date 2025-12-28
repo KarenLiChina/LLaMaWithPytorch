@@ -323,7 +323,7 @@ class LLaMa:
 
 
 if __name__ == '__main__':
-    allow_cuda = False
+    allow_cuda = True
     device = "cuda" if torch.cuda.is_available() and allow_cuda else "cpu"
     model = LLaMa.build(
         checkpoint_dir="c:/model/llama-2-7b/",
