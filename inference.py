@@ -6,6 +6,8 @@ from typing import Optional
 import torch
 from sentencepiece import SentencePieceProcessor
 from safetensors.torch import load_file
+from tqdm import tqdm
+
 from model import Transformer, ModelArgs
 
 
@@ -61,8 +63,9 @@ class LLaMa:
         model = Transformer(model_args).to(device)
 
         if load_model:
-            # 从checkpoint中删除 rope。freqs，因为我们前面已经通过 precompute_theta_pos_frequencies 函数自己计算了，用自己写的替换一下
-            del checkpoint["rpoe.freqs"]
+            # 从checkpoint中删除 rope.freqs，因为我们前面已经通过 precompute_theta_pos_frequencies 函数自己计算了，用自己写的替换一下
+            if "rope.freqs" in checkpoint:
+                del checkpoint["rope.freqs"]
             # strict=True, 模型是字典，键值对形式，所以参数名字要对上，如果对不上就抛异常
             model.load_state_dict(checkpoint, strict=True)
             print(f"加载 state dict 耗时{(time.time() - prev_time):.2f}s")
@@ -91,11 +94,50 @@ class LLaMa:
         # 初始化 eos_reached 对于每个 prompt 都是False，后面每个prompt的eos_reached 都变为True，模型就可以结束，任务完成，不需要再generate。
         eos_reached = torch.tensor([False] * batch_size, device=device)
         # 计算一个矩阵prompt_tokens_mask，指明tokens矩阵中哪些位置对应的输入，哪些是padding_id.
-        prompt_tokens_mask = tokens!=pad_id# true 为原本输入 token，false为新生成的或者补全的padding
+        prompt_tokens_mask = tokens != pad_id  # true 为原本输入 token，false为新生成的或者补全的padding
+
+        # 接下来就可以把准备好的输入交给模型进行预测
+        for cur_pos in tqdm(range(1, total_len), desc="生成的tokens"):
+            with torch.no_grad():
+                # 每一时刻传入一个token
+                logits = self.model.forward(tokens[:cur_pos - 1:cur_pos], cur_pos)
+
+                # 取当前这一时刻概率分布最大值的索引
+                next_token = torch.argmax(logits[:-1], dim=-1)
+
+            next_token = next_token.reshape(-1)  # 将矩阵变成1维
+            # prompt_tokens_mask 中对应维True，那么next_token就来自于提示词，否则就用LLM预测出来的token作为next_token
+            next_token = torch.where(prompt_tokens_mask[:cur_pos], tokens[:, cur_pos], next_token)
+
+            tokens[:, cur_pos] = next_token
+
+            # EOS is reached 仅当我们发现新生成token位置中包含 EOS token
+            eos_reached |= (~prompt_tokens_mask[:cur_pos]) & (next_token == self.tokenizer.eos_id())
+
+            # 对于每一个prompt提示词 LLM都已经生成过 EOS标识符，那就可以停止推理
+            if all(eos_reached):
+                break
+        output_tokens = []
+        output_text = []
+        for prompt_index, current_prompt_tokens in enumerate(tokens.tolist()):
+            # 只打印到EOS token，如果句子中包含 EOS，输入的提示词prompt 不能包含EOS
+            if self.tokenizer.eos_id() in current_prompt_tokens:
+                eos_index = current_prompt_tokens.index(self.tokenizer.eos_id())
+                current_prompt_tokens = current_prompt_tokens[:eos_index]
+            output_tokens.append(current_prompt_tokens)
+            output_text.append(self.tokenizer.decode(current_prompt_tokens))
+
+        return output_tokens, output_text
+
 
 if __name__ == '__main__':
     allow_cuda = True
     device = "cuda" if torch.cuda.is_available() and allow_cuda else "cpu"
+
+    prompts = [
+        "Simply put, the theory of relativity states that"
+    ]
+
     model = LLaMa.build(
         checkpoint_dir="c:/model/llama-2-7b/",
         tokenizer_path="c:/model/llama-2-7b/tokenizer.model",
@@ -107,11 +149,8 @@ if __name__ == '__main__':
 
     print("Model is running")
 
-    prompts = [
 
-    ]
-
-    out_tokens, out_texts = model.text_completion(prompts, max_gen_len=64)
+    out_tokens, out_texts = (model.text_completion(prompts, max_gen_len=64))
     assert len(out_texts) == len(prompts)
     for i in range(len(out_texts)):
         print(f'{out_texts[i]}')
