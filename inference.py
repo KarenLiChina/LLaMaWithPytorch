@@ -72,7 +72,7 @@ class LLaMa:
 
         return LLaMa(model, tokenizer, model_args)
 
-    def text_completion(self, prompt: list[str], sample: bool = True, temperature: float = 0.6,
+    def text_completion(self, prompt: list[str], do_sample: bool = True, temperature: float = 0.6,
                         top_p: float = 0.9, max_gen_len: Optional[int] = None):
         if max_gen_len is None:
             max_gen_len = self.args.max_seq_len
@@ -103,7 +103,7 @@ class LLaMa:
                 # 每一时刻传入一个token
                 logits = self.model.forward(tokens[:cur_pos - 1:cur_pos], cur_pos)
 
-            if sample:  # 用户传进来的超参数
+            if do_sample:  # 用户传进来的超参数
                 # 基于 Top P的随机采样策略
                 probs = torch.softmax(logits[:-1] / temperature, dim=-1)  # dim 对哪个 维度的数据进行softmax
                 next_token = self._sample_top_p(probs, top_p)
