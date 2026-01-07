@@ -72,7 +72,7 @@ class LLaMa:
 
         return LLaMa(model, tokenizer, model_args)
 
-    def text_completion(self, prompt: list[str], do_sample: bool = True, temperature: float = 0.6,
+    def text_completion(self, prompt: list[str], device: str, do_sample: bool = True, temperature: float = 0.6,
                         top_p: float = 0.9, max_gen_len: Optional[int] = None):
         if max_gen_len is None:
             max_gen_len = self.args.max_seq_len
@@ -172,7 +172,13 @@ if __name__ == '__main__':
 
     print("Model is running")
 
-    out_tokens, out_texts = (model.text_completion(prompts, max_gen_len=64))
+    out_tokens, out_texts = (model.text_completion(prompts, device=device, max_gen_len=64, do_sample=False))
+    assert len(out_texts) == len(prompts)
+    for i in range(len(out_texts)):
+        print(f'{out_texts[i]}')
+        print('-' * 50)
+
+    out_tokens, out_texts = (model.text_completion(prompts, device=device, max_gen_len=64, do_sample=True))
     assert len(out_texts) == len(prompts)
     for i in range(len(out_texts)):
         print(f'{out_texts[i]}')
