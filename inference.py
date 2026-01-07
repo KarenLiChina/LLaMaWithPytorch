@@ -166,7 +166,7 @@ if __name__ == '__main__':
         tokenizer_path="c:/model/llama-2-7b/tokenizer.model",
         load_model=True,
         max_seq_len=1024,
-        max_batch_size=1,
+        max_batch_size=32,
         device=device
     )
 

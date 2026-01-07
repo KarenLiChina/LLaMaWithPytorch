@@ -20,7 +20,7 @@ class ModelArgs:
     norm_eps: float = 1e-5
 
     # 参数给KV cache 使用
-    max_batch_size: int = 1  # 最大批次数量
+    max_batch_size: int = 32  # 最大批次数量
     max_seq_len: int = 1024  # 最大句子长度
 
     device: str = None  # 给 pytorch用的，是用GPU还是用CPU
