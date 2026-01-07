@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Optional
 
 import torch
-from sentencepiece import SentencePieceProcessor
 from safetensors.torch import load_file
+from sentencepiece import SentencePieceProcessor
 from tqdm import tqdm
 
 from model import Transformer, ModelArgs
@@ -72,7 +72,8 @@ class LLaMa:
 
         return LLaMa(model, tokenizer, model_args)
 
-    def text_completion(self, prompt: list[str], max_gen_len: Optional[int] = None):
+    def text_completion(self, prompt: list[str], sample: bool = True, temperature: float = 0.6,
+                        top_p: float = 0.9, max_gen_len: Optional[int] = None):
         if max_gen_len is None:
             max_gen_len = self.args.max_seq_len
         # 转换每个prompt 为token ids
@@ -102,7 +103,12 @@ class LLaMa:
                 # 每一时刻传入一个token
                 logits = self.model.forward(tokens[:cur_pos - 1:cur_pos], cur_pos)
 
-                # 取当前这一时刻概率分布最大值的索引
+            if sample:  # 用户传进来的超参数
+                # 基于 Top P的随机采样策略
+                probs = torch.softmax(logits[:-1] / temperature, dim=-1)  # dim 对哪个 维度的数据进行softmax
+                next_token = self._sample_top_p(probs, top_p)
+            else:
+                # 取当前这一时刻概率分布最大值的索引, Greedy Search
                 next_token = torch.argmax(logits[:-1], dim=-1)
 
             next_token = next_token.reshape(-1)  # 将矩阵变成1维
@@ -129,6 +135,23 @@ class LLaMa:
 
         return output_tokens, output_text
 
+    def _sample_top_p(self, probs, p):
+        probs_sort, probs_inx = torch.sort(probs, dim=-1, descending=True)  # 降序排序
+        probs_sum = torch.cumsum(probs_sort, dim=-1)  # 将概率进行累加
+        mask = probs_sum - probs_sort > p
+        # 把没有被 top p 选中的 tokens的概率值设置为0.0
+        probs_sort[mask] = 0.0
+        # 重新获得一个加起来是1 的概率分布
+        probs_sort.div_(probs_sort.sum(dim=-1, keepdim=True))  # 重新获得概率分布
+        # 进行随机采样
+        # 从 top p distribution 中采样一个token的index，此时的index 并不是词表中的token id
+        next_token = torch.multinomial(probs_sort, num_samples=1)  # 随机采样一个
+        # 因为一开始 概率分布进行了排序， 所以采样出来的token index 并非词典中的token id
+        # sort 排序的时候要接收两个结果， probs_sort 是根据排序的具体的概率值
+        # probs_idx 是排序后概率值对应原有词典中的顺序
+        next_token = torch.gather(probs_inx, -1, next_token)  # 对应词典中的token id
+        return next_token
+
 
 if __name__ == '__main__':
     allow_cuda = True
@@ -148,7 +171,6 @@ if __name__ == '__main__':
     )
 
     print("Model is running")
-
 
     out_tokens, out_texts = (model.text_completion(prompts, max_gen_len=64))
     assert len(out_texts) == len(prompts)
